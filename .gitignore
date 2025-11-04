@@ -1,0 +1,15 @@
+# Python virtual environment
+venv/
+
+# Generated data. These files are too large for a repo.
+#data/
+
+# Saved model weights. These are also too large.
+#saved_models/
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# OS-specific files
+#.DS_Store
