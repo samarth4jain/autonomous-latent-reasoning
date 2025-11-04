@@ -1,0 +1,8 @@
+torch>=2.0.0
+transformers>=4.30.0
+numpy>=1.24.0
+tqdm>=4.64.0
+
+# Optional / commonly useful (uncomment if needed):
+# datasets>=2.0.0
+# sentencepiece>=0.1.97
