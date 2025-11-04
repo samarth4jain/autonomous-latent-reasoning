@@ -145,12 +145,3 @@ Adjust the exact argument names to match the script — open `train_baseline.py`
 
 If this repo doesn't contain a `LICENSE` file, check with the owner for reuse permissions. For questions, open an issue on the repository.
 
-## Completion
-
-This README provides step-by-step instructions to get the project running locally and remotely, and how to create and use virtual environments. If you'd like, I can also:
-
-- add a starter `requirements.txt` with pinned versions
-- add a small example `run` script or a `Makefile`/`tasks.json` for common commands
-- generate a minimal `Dockerfile` for reproducible remote runs
-
-If you want any of the above, tell me which option and I'll add it.
