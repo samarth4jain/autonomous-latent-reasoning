@@ -83,6 +83,62 @@ pip install -r requirements.txt
 python train_baseline.py &> train.log &
 ```
 
+### Using this project's SLURM script on an HPC with SLURM
+
+This cluster uses SLURM for all GPU access. The repository contains a simple job script `job.sh` that requests 1 GPU, 4 CPUs, and 16 GB RAM by default.
+
+Steps (on the cluster):
+
+1. Clone or copy the repo into your home directory on the cluster (example below uses your home):
+
+```bash
+# Example (replace <repo-url> with your git URL):
+cd $HOME
+git clone <repo-url> autonomous-latent-reasoning
+cd autonomous-latent-reasoning
+```
+
+2. Create and activate a virtual environment, then install dependencies:
+
+```bash
+python3 -m venv $HOME/venv
+source $HOME/venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+3. (Optional) Edit `job.sh` to point to your venv location or adjust SBATCH directives (CPUs, mem, time).
+
+4. Submit the job with `sbatch`:
+
+```bash
+sbatch job.sh
+```
+
+5. For quick debugging, request an interactive allocation with a GPU (example):
+
+```bash
+# Request an interactive shell with 1 GPU, 4 CPUs, 16G mem
+srun --gres=gpu:1 --cpus-per-task=4 --mem=16G --pty bash -i
+```
+
+6. Monitor jobs:
+
+```bash
+# Show your jobs
+squeue -u your_username
+
+# Show partitions / nodes
+sinfo
+
+# Cancel a job
+#scancel <job_id>
+```
+
+Notes:
+- The cluster enforces a maximum runtime of 24 hours and a maximum of 1 GPU per user/job. Make sure your SBATCH `--time` and `--gres` settings follow this.
+- Do not run training directly on the login node. Use `srun` or `sbatch` to get a compute node.
+
 Tips:
 - If you will run long jobs, consider using `tmux` or `screen` or a job manager (SLURM) on HPC.
 - For reproducibility and dependency management on remote machines, consider using `conda` for easier CUDA-enabled package installs.
