@@ -1,11 +1,10 @@
 import torch
 from torch.utils.data import DataLoader
-from transformers import GPT2Tokenizer
-from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
+from transformers import GPT2Tokenizer, AutoModelForCausalLMWithValueHead
 from tqdm import tqdm
 import os
 
-# Import the TRL libraries
+# Import the TRL libraries (these will now work)
 from trl import PPOConfig, PPOTrainer
 
 # Import your project's custom files
@@ -82,11 +81,11 @@ def main():
         log_with=None
     )
 
-        # --- Tokenizer ---
     # --- Tokenizer ---
     tokenizer = GPT2Tokenizer.from_pretrained(cfg.MODEL_NAME)
     tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left" # <-- ADD THIS LINE
+    # CRITICAL: Set padding side to left for batched generation
+    tokenizer.padding_side = "left"
 
     # --- Datasets and DataLoaders ---
     train_dataset = ProsQADataset(cfg.TRAIN_FILE, tokenizer, cfg.MAX_QUESTION_LEN, cfg.MAX_ANSWER_LEN)
@@ -106,13 +105,13 @@ def main():
     ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(cfg.MODEL_NAME).to(device)
     
     # --- Initialize PPOTrainer ---
-    # This is the correct, modern signature for TRL
+    # This is the correct signature for the library versions you just installed
     ppo_trainer = PPOTrainer(
         config=ppo_config,
         model=model,
         ref_model=ref_model,
         tokenizer=tokenizer,
-        dataset=train_dataset,  # This is correct for the new version
+        dataset=train_dataset,
         data_collator=collate_fn
     )
     
@@ -132,59 +131,56 @@ def main():
     for epoch in range(cfg.N_EPOCHS):
         print(f"--- Epoch {epoch+1}/{cfg.N_EPOCHS} ---")
         
-        # Use the dataloader created *by* the trainer
         progress_bar = tqdm(ppo_trainer.dataloader, desc="LPO Training")
         
         for batch in progress_bar:
-            # Note: TRL's dataloader gives us lists, not tensors
             query_tensors = batch['input_ids'].to(device)
-            attention_mask_tensors = batch['attention_mask'].to(device) # <-- RENAMED
+            attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
 
-            # Convert the batched tensor to a list of 1D tensors
+            # Convert batched tensor to a list of 1D tensors for generate
             query_list = [q for q in query_tensors]
-            mask_list = [m for m in attention_mask_tensors] # <-- ADD THIS LINE
 
             # 1. Act (Rollout)
-            response_tensors = ppo_trainer.generate(
+            response_tensors_list = ppo_trainer.generate(
                 query_list,
+                attention_mask=attention_mask, # Pass the mask here
                 **generation_kwargs
             )
-            # 2. Get Reward (Iterate over the batch)
-            rewards = []
             
-            # We iterate over each item in the batch one by one
-            for i in range(len(query_tensors)):
-                query = query_tensors[i]
-                label = labels[i]
-                response = response_tensors[i] # Get the i-th tensor from the list
+            # --- We must manually pad responses to be the same length ---
+            max_len = max(len(t) for t in response_tensors_list)
+            response_tensors = []
+            for t in response_tensors_list:
+                padding = torch.tensor([tokenizer.pad_token_id] * (max_len - len(t)), device=device)
+                response_tensors.append(torch.cat((t, padding)))
+            response_tensors = torch.stack(response_tensors)
+            # --- End of padding ---
 
-                # Get only the generated part of the response
-                generated_part = response[len(query):]
-                
-                # Get the answer part (after the thoughts)
-                answer_tokens = generated_part[cfg.N_THOUGHTS:]
-                
-                # Decode the generated answer
-                gen_answer_text = tokenizer.decode(answer_tokens, skip_special_tokens=True)
-                gen_answer = gen_answer_text.split(tokenizer.eos_token)[0].strip()
-                
-                # Decode the ground truth answer
-                label_ids = label.clone()
-                label_ids[label_ids == -100] = tokenizer.pad_token_id
-                truth_text = tokenizer.decode(label_ids, skip_special_tokens=True)
+            generated_part = response_tensors[:, query_tensors.shape[1]:]
+
+            # 2. Get Reward
+            rewards = []
+            label_ids = labels.clone()
+            label_ids[label_ids == -100] = tokenizer.pad_token_id
+            ground_truth_texts = tokenizer.batch_decode(label_ids, skip_special_tokens=True)
+            
+            answer_tokens = generated_part[:, cfg.N_THOUGHTS:]
+            generated_texts = tokenizer.batch_decode(answer_tokens, skip_special_tokens=True)
+            
+            for gen_text, truth_text in zip(generated_texts, ground_truth_texts):
+                gen_answer = gen_text.split(tokenizer.eos_token)[0].strip()
                 truth_answer = truth_text.split(tokenizer.eos_token)[0].strip()
-
-                # Compare and append reward
+                
                 if gen_answer == truth_answer:
                     rewards.append(torch.tensor(1.0, device=device))
                 else:
                     rewards.append(torch.tensor(0.0, device=device))
 
             # 3. Update (Learn)
-            # We pass the original lists to the trainer
-            # Pass the attention masks for the queries to the step function
-            stats = ppo_trainer.step(query_list, response_tensors, rewards, masks=mask_list)
+            # Pass the *original* list of tensors (pre-padding) to step
+            stats = ppo_trainer.step(query_list, response_tensors_list, rewards)
+            
             mean_reward = torch.mean(torch.stack(rewards)).item()
             progress_bar.set_postfix({"mean_reward": f"{mean_reward:.2f}"})
         
@@ -199,7 +195,7 @@ def main():
             tokenizer.save_pretrained(cfg.SAVE_PATH)
             
     print(f"LPO Training complete! Best validation accuracy: {best_accuracy:.2f}%")
-    print(f"Baseline accuracy was: 42.95%") # Your benchmark
+    print(f"Baseline accuracy was: 42.95%")
 
 if __name__ == "__main__":
     main()
