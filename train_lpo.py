@@ -98,7 +98,7 @@ def main():
     
     # PPO-specific config
     ppo_config = PPOConfig(
-        model_name=config["model_name"],
+        #model_name=config["model_name"],
         learning_rate=config["lr"],
         batch_size=config["ppo_batch_size"],
         mini_batch_size=config["mini_batch_size"],
