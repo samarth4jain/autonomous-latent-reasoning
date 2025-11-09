@@ -145,15 +145,19 @@ def main():
 
     # --- 6. INITIALIZE PPO TRAINER ---
     # --- 6. INITIALIZE PPO TRAINER ---
+    # --- 6. INITIALIZE PPO TRAINER ---
     ppo_trainer = PPOTrainer(
-        config=ppo_config,
+        # config=ppo_config, # This argument is no longer used
         model=model,
         ref_model=ref_model,
         tokenizer=tokenizer,
-        dataset=train_dataset, # The trainer needs the dataset to create the dataloader
-        data_collator=collate_fn
+        dataset=train_dataset,
+        data_collator=collate_fn,
+        # Pass parameters from the config object directly
+        learning_rate=ppo_config.learning_rate,
+        batch_size=ppo_config.batch_size,
+        mini_batch_size=ppo_config.mini_batch_size
     )
-    
     # Generation settings for the "thoughts" + "answer"
     # We will generate N_THOUGHTS + MAX_ANSWER_LEN tokens
     generation_kwargs = {
