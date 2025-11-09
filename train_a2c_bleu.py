@@ -75,7 +75,7 @@ def evaluate(model, tokenizer, val_loader, device):
             labels = batch['labels'].to(device)
 
             # Use our model's generate function
-            generated_answer_tokens, _, _ = model(input_ids, attention_mask)
+            generated_answer_tokens, _, _ ,_= model(input_ids, attention_mask)
             predicted_answer_tokens = generated_answer_tokens
 
             num_tokens = predicted_answer_tokens.shape[1]
