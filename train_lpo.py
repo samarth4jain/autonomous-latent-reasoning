@@ -1,35 +1,48 @@
 import torch
-from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from transformers import GPT2Tokenizer
 from tqdm import tqdm
 import os
 
 # Import the new TRL libraries
-from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
+from trl import PPOConfig, PPOTrainer, AutoModelForCausalLMWithValueHead
 
-from src.model import ContinuousThoughtModel
+# Import your project's custom files
 from src.dataset import ProsQADataset
 
-# --- 1. REWARD FUNCTION ---
-# This is a simple reward function. It will be called by the PPO trainer.
-# It checks if the generated answer *exactly* matches the ground truth.
-def compute_reward(model, tokenizer, val_loader, device):
-    """
-    This function will be used as a custom reward function.
-    For simplicity in this step, we'll use a simpler version in the loop.
-    Let's define a simpler reward function for the loop.
-    """
-    pass # We will define this inline in the main loop for clarity
+# --- 1. CONFIGURATION ---
+# Centralized configuration for the entire script
+class Config:
+    # --- Project ---
+    MODEL_NAME = 'gpt2'
+    TRAIN_FILE = 'data/train.jsonl'
+    VAL_FILE = 'data/validation.jsonl'
+    SAVE_PATH = 'saved_models/lpo_model'
+    
+    # --- Model ---
+    N_THOUGHTS = 6 # The number of "thought tokens" to generate
+    MAX_QUESTION_LEN = 512 # Max tokens for the question
+    MAX_ANSWER_LEN = 50  # Max tokens for the answer
+    
+    # --- PPO Training ---
+    N_EPOCHS = 6
+    LEARNING_RATE = 1e-5 # PPO often requires a smaller, more stable learning rate
+    
+    # PPO_BATCH_SIZE is for the *update* step (from the paper's 128)
+    PPO_BATCH_SIZE = 128
+    PPO_MINI_BATCH_SIZE = 32
+    
+    # ROLLOUT_BATCH_SIZE is for *generating* data
+    # This must fit on your GPU.
+    ROLLOUT_BATCH_SIZE = 32
 
 # --- 2. EVALUATION FUNCTION ---
-# We can reuse our evaluation function, but we must adapt it to
-# use the PPO model's `generate` function correctly.
+# This will evaluate our model's performance on the validation set
 def evaluate(model, tokenizer, val_loader, device):
     print("\n--- Evaluating LPO Model ---")
     model.eval() # Set the model to evaluation mode
-    correct_predictions = 0
-    total_predictions = 0
+    total_correct_tokens = 0
+    total_tokens = 0
 
     with torch.no_grad():
         for batch in tqdm(val_loader, desc="Evaluating"):
@@ -38,102 +51,59 @@ def evaluate(model, tokenizer, val_loader, device):
             labels = batch['labels'].to(device)
 
             # --- Generation ---
-            # We generate from the question (input_ids)
-            # We must provide the correct generation parameters
             generated_ids = model.generate(
                 input_ids,
                 attention_mask=attention_mask,
-                max_new_tokens=50, # Max length for an answer
+                max_new_tokens=Config.N_THOUGHTS + Config.MAX_ANSWER_LEN,
                 pad_token_id=tokenizer.eos_token_id
             )
             
-            # --- Get Predicted Answer Tokens ---
-            # The generated_ids will contain the input_ids + new_tokens
-            # We only want the new_tokens
-            predicted_token_ids = generated_ids[:, input_ids.shape[1]:]
+            # Extract *only* the newly generated tokens
+            predicted_token_ids_full = generated_ids[:, input_ids.shape[1]:]
+            
+            # The model's *answer* starts after its thoughts
+            predicted_answer_tokens = predicted_token_ids_full[:, Config.N_THOUGHTS:]
 
             # --- Token-Level Accuracy Calculation ---
-            num_tokens = predicted_token_ids.shape[1]
-            # Ensure label_tokens has the same length as predicted_token_ids
+            num_tokens = predicted_answer_tokens.shape[1]
             label_tokens = labels[:, :num_tokens]
 
             valid_labels_mask = label_tokens != -100
-            
-            # Handle potential shape mismatch if generation is shorter than labels
-            pred_len = predicted_token_ids.shape[1]
-            label_len = label_tokens.shape[1]
-            
-            if pred_len < label_len:
-                label_tokens = label_tokens[:, :pred_len]
-                valid_labels_mask = valid_labels_mask[:, :pred_len]
-            elif label_len < pred_len:
-                predicted_token_ids = predicted_token_ids[:, :label_len]
-
-            correct_tokens = (predicted_token_ids == label_tokens) & valid_labels_mask
+            correct_tokens = (predicted_answer_tokens == label_tokens) & valid_labels_mask
             
             total_correct_tokens += correct_tokens.sum().item()
             total_tokens += valid_labels_mask.sum().item()
-            # --- End of Token-Level Accuracy ---
 
     accuracy = (total_correct_tokens / total_tokens) * 100 if total_tokens > 0 else 0
     print(f"Validation Token Accuracy: {accuracy:.2f}%")
     return accuracy
 
+# --- 3. MAIN LPO TRAINING SCRIPT ---
 def main():
-    # --- 3. CONFIGURATION ---
-    # We use the same baseline config, but add PPO-specific parameters
-    config = {
-        "model_name": 'gpt2',
-        "train_file": 'data/train.jsonl',
-        "val_file": 'data/validation.jsonl',
-        "save_path": 'saved_models/lpo_model',
-        "lr": 1e-5, # PPO often requires a smaller learning rate
-        "n_epochs": 6,
-        "n_thoughts": 6,
-        "max_q_len": 256,
-        "max_a_len": 50,
-        "ppo_batch_size": 16, # This is the batch size for the PPO update
-        "mini_batch_size": 16, # This is the mini-batch size for the PPO update
-    }
     
-    # PPO-specific config
-    # PPO-specific config
-    ppo_config = PPOConfig(
-        # We correctly removed 'model_name'
-        learning_rate=config["lr"],
-        batch_size=config["ppo_batch_size"],
-        mini_batch_size=config["mini_batch_size"],
-    )
-
-    # --- 4. SETUP ---
-    os.makedirs(os.path.dirname(config["save_path"]), exist_ok=True)
+    # --- Setup ---
+    cfg = Config()
+    os.makedirs(os.path.dirname(cfg.SAVE_PATH), exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    tokenizer = GPT2Tokenizer.from_pretrained(config["model_name"])
+    # --- PPOConfig ---
+    # This is the correct way: parameters go into the config object
+    ppo_config = PPOConfig(
+        learning_rate=cfg.LEARNING_RATE,
+        batch_size=cfg.PPO_BATCH_SIZE,
+        mini_batch_size=cfg.PPO_MINI_BATCH_SIZE,
+        log_with=None # Set to None to disable logging
+    )
+
+    # --- Tokenizer ---
+    tokenizer = GPT2Tokenizer.from_pretrained(cfg.MODEL_NAME)
     tokenizer.pad_token = tokenizer.eos_token
 
-    # --- 5. LOAD MODELS ---
-    # We need two models for PPO:
-    # 1. The 'policy' model we are training.
-    # 2. A 'reference' model to stabilize training.
+    # --- Datasets and DataLoaders ---
+    train_dataset = ProsQADataset(cfg.TRAIN_FILE, tokenizer, cfg.MAX_QUESTION_LEN, cfg.MAX_ANSWER_LEN)
+    val_dataset = ProsQADataset(cfg.VAL_FILE, tokenizer, cfg.MAX_QUESTION_LEN, cfg.MAX_ANSWER_LEN)
     
-    # We load our custom ContinuousThoughtModel, but wrap it
-    # with AutoModelForCausalLMWithValueHead. This wrapper
-    # adds an extra "value head" needed for PPO.
-    
-    # IMPORTANT: We can't use our custom model class directly with TRL
-    # in this simple setup. We will use a standard GPT2 model
-    # and *tell it to generate extra tokens* as "thoughts".
-    
-    model = AutoModelForCausalLMWithValueHead.from_pretrained(config["model_name"]).to(device)
-    ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(config["model_name"]).to(device)
-    
-    # Load the datasets
-    train_dataset = ProsQADataset(config["train_file"], tokenizer, config["max_q_len"], config["max_a_len"])
-    val_dataset = ProsQADataset(config["val_file"], tokenizer, config["max_q_len"], config["max_a_len"])
-    
-    # We need a data collator to handle padding for queries
     def collate_fn(batch):
         return {
             "input_ids": torch.stack([item["input_ids"] for item in batch]),
@@ -141,70 +111,67 @@ def main():
             "labels": torch.stack([item["labels"] for item in batch])
         }
     
-    train_loader = DataLoader(train_dataset, batch_size=config["ppo_batch_size"], shuffle=True, collate_fn=collate_fn)
-    val_loader = DataLoader(val_dataset, batch_size=config["ppo_batch_size"], collate_fn=collate_fn)
+    # This loader is for our custom evaluation
+    val_loader = DataLoader(val_dataset, batch_size=cfg.ROLLOUT_BATCH_SIZE, collate_fn=collate_fn)
 
-    # --- 6. INITIALIZE PPO TRAINER ---
-    # --- 6. INITIALIZE PPO TRAINER ---
-    # --- 6. INITIALIZE PPO TRAINER ---
-    # --- 6. INITIALIZE PPO TRAINER ---
-    # This is the correct signature for modern TRL
-    # --- 6. INITIALIZE PPO TRAINER ---
-    # This is the correct signature for your version of TRL
-    # --- 6. INITIALIZE PPO TRAINER ---
-    # This is the correct signature for your version
+    # --- Load Models ---
+    # The 'policy' model we are training (with a value head)
+    model = AutoModelForCausalLMWithValueHead.from_pretrained(cfg.MODEL_NAME).to(device)
+    # The 'reference' model (untrained) to stabilize RL
+    ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(cfg.MODEL_NAME).to(device)
+    
+    # --- Initialize PPOTrainer ---
+    # This is the correct, modern signature for TRL
     ppo_trainer = PPOTrainer(
-        ppo_config,      # Pass the single config object
+        config=ppo_config,
         model=model,
         ref_model=ref_model,
-        #tokenizer=tokenizer,    # Pass the tokenizer
-        #dataset=train_dataset,  # Pass the dataset
+        tokenizer=tokenizer,
+        dataset=train_dataset,
         data_collator=collate_fn
     )
-    # Generation settings for the "thoughts" + "answer"
-    # We will generate N_THOUGHTS + MAX_ANSWER_LEN tokens
+    
+    # --- Generation Settings ---
     generation_kwargs = {
         "min_length": -1,
         "top_k": 0.0,
         "top_p": 1.0,
         "do_sample": True,
         "pad_token_id": tokenizer.eos_token_id,
-        "max_new_tokens": config["n_thoughts"] + config["max_a_len"]
+        "max_new_tokens": cfg.N_THOUGHTS + cfg.MAX_ANSWER_LEN
     }
     
     best_accuracy = -1.0
     
-    # --- 7. LPO TRAINING LOOP ---
-    for epoch in range(config["n_epochs"]):
-        print(f"--- Epoch {epoch+1}/{config['n_epochs']} ---")
-        progress_bar = tqdm(train_loader, desc="LPO Training")
+    # --- LPO TRAINING LOOP ---
+    for epoch in range(cfg.N_EPOCHS):
+        print(f"--- Epoch {epoch+1}/{cfg.N_EPOCHS} ---")
+        
+        # Use the dataloader created *by* the trainer
+        progress_bar = tqdm(ppo_trainer.dataloader, desc="LPO Training")
+        
         for batch in progress_bar:
+            # Note: TRL's dataloader gives us lists, not tensors
             query_tensors = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
 
-            # 1. Act (Rollout) - Generate thoughts + answer
+            # 1. Act (Rollout)
             response_tensors = ppo_trainer.generate(
                 query_tensors,
                 attention_mask=attention_mask,
                 **generation_kwargs
             )
-            
-            # The 'response' includes the query. We need to extract just the generated part
             generated_part = response_tensors[:, query_tensors.shape[1]:]
 
             # 2. Get Reward
             rewards = []
             
-            # Decode labels for comparison
             label_ids = labels.clone()
             label_ids[label_ids == -100] = tokenizer.pad_token_id
             ground_truth_texts = tokenizer.batch_decode(label_ids, skip_special_tokens=True)
             
-            # Decode generated answers
-            # We only take the *answer* part of the generation,
-            # which we assume comes *after* the N_THOUGHTS
-            answer_tokens = generated_part[:, config["n_thoughts"]:]
+            answer_tokens = generated_part[:, cfg.N_THOUGHTS:]
             generated_texts = tokenizer.batch_decode(answer_tokens, skip_special_tokens=True)
             
             for gen_text, truth_text in zip(generated_texts, ground_truth_texts):
@@ -217,23 +184,28 @@ def main():
                     rewards.append(torch.tensor(0.0, device=device))
 
             # 3. Update (Learn)
-            # The ppo_trainer.step() function does all the PPO magic
-            stats = ppo_trainer.step([q for q in query_tensors], [r for r in response_tensors], rewards)
-            ppo_trainer.log_stats(stats, batch, rewards)
-            progress_bar.set_postfix({"mean_reward": torch.mean(torch.stack(rewards)).item()})
+            # We need to pass Python lists of tensors to ppo_trainer.step
+            query_list = [q for q in query_tensors]
+            response_list = [r for r in response_tensors]
+            
+            stats = ppo_trainer.step(query_list, response_list, rewards)
+            
+            mean_reward = torch.mean(torch.stack(rewards)).item()
+            progress_bar.set_postfix({"mean_reward": f"{mean_reward:.2f}"})
         
         # --- Evaluate at the end of each epoch ---
-        # We must pass the *policy model* (model.model) to evaluate
-        accuracy = evaluate(model, tokenizer, val_loader, device)
+        # We pass model.model because 'model' is the ValueHead wrapper
+        accuracy = evaluate(model.model, tokenizer, val_loader, device)
         
         # --- Save the best model ---
         if accuracy > best_accuracy:
             best_accuracy = accuracy
-            print(f"New best accuracy! Saving model to {config['save_path']}")
-            model.save_pretrained(config['save_path'])
-            tokenizer.save_pretrained(config['save_path'])
+            print(f"New best accuracy! Saving model to {cfg.SAVE_PATH}")
+            model.save_pretrained(cfg.SAVE_PATH)
+            tokenizer.save_pretrained(cfg.SAVE_PATH)
             
-    print(f"Training complete! Best validation accuracy: {best_accuracy:.2f}%")
+    print(f"LPO Training complete! Best validation accuracy: {best_accuracy:.2f}%")
+    print(f"Baseline accuracy was: 42.95%") # Your benchmark
 
 if __name__ == "__main__":
     main()
