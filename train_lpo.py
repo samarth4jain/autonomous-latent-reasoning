@@ -149,13 +149,16 @@ def main():
     # --- 6. INITIALIZE PPO TRAINER ---
     # --- 6. INITIALIZE PPO TRAINER ---
     # This is the correct signature for modern TRL
+    # --- 6. INITIALIZE PPO TRAINER ---
+    # This is the correct signature for your version of TRL
     ppo_trainer = PPOTrainer(
-        config=ppo_config,      # Pass the config object
         model=model,
         ref_model=ref_model,
-        tokenizer=tokenizer,    # The tokenizer is also required
-        dataset=train_dataset,
-        data_collator=collate_fn
+        data_collator=collate_fn,
+        # Pass parameters from the config object directly
+        learning_rate=ppo_config.learning_rate,
+        batch_size=ppo_config.batch_size,
+        mini_batch_size=ppo_config.mini_batch_size
     )
     # Generation settings for the "thoughts" + "answer"
     # We will generate N_THOUGHTS + MAX_ANSWER_LEN tokens
