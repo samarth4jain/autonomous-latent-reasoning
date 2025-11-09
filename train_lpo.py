@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
-from transformers import GPT2Tokenizer, AutoModelForCausalLMWithValueHead
+from transformers import GPT2Tokenizer
+from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
 from tqdm import tqdm
 import os
 
