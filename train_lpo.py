@@ -145,17 +145,12 @@ def main():
             query_list = [q for q in query_tensors]
 
             # 1. Act (Rollout)
+            # 1. Act (Rollout)
+            # response_tensors will be a LIST of 1D tensors of varying lengths
             response_tensors = ppo_trainer.generate(
-                query_list,  # Pass the list here
-                #attention_mask=attention_mask,
+                query_list,
                 **generation_kwargs
             )
-            
-            # The 'generate' function will return a list of tensors,
-            # so we must stack them back into a batched tensor for processing.
-            response_tensors = torch.stack(response_tensors)
-            
-            generated_part = response_tensors[:, query_tensors.shape[1]:]
             # 2. Get Reward
             rewards = []
             
