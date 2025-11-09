@@ -7,7 +7,6 @@ import os
 
 # Import the new TRL libraries
 from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
-from trl.core import LengthSampler
 
 from src.model import ContinuousThoughtModel
 from src.dataset import ProsQADataset
