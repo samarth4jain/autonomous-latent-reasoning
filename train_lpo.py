@@ -158,7 +158,7 @@ def main():
         model=model,
         ref_model=ref_model,
         #tokenizer=tokenizer,    # Pass the tokenizer
-        dataset=train_dataset,  # Pass the dataset
+        #dataset=train_dataset,  # Pass the dataset
         data_collator=collate_fn
     )
     # Generation settings for the "thoughts" + "answer"
