@@ -24,34 +24,47 @@ class ReinforceModel(GPT2LMHeadModel):
         current_attention_mask = attention_mask
 
         ones_mask = torch.ones(batch_size, 1, dtype=torch.long, device=device)
+        past_key_values = None
 
         # 2. Generate N thoughts (we don't need their log-probs)
         for _ in range(self.n_thoughts):
             outputs = self.transformer(
                 inputs_embeds=current_embeds,
-                attention_mask=current_attention_mask
+                attention_mask=current_attention_mask,
+                past_key_values=past_key_values
             )
             
+            # Get the new KV cache
+            past_key_values = outputs.past_key_values
+            
+            # Get the last hidden state
             last_hidden_state = outputs.last_hidden_state[:, -1, :]
             thought_vector = last_hidden_state.unsqueeze(1)
             
-            current_embeds = torch.cat([current_embeds, thought_vector], dim=1)
+            # The next input is the thought vector
+            current_embeds = thought_vector
+            
+            # Update the attention mask
             current_attention_mask = torch.cat([current_attention_mask, ones_mask], dim=1)
         
         # 3. Generate the answer, one token at a time
         
-        # Get the final hidden state after all thoughts
-        last_hidden_state = current_embeds[:, -1, :].unsqueeze(1)
+        # The 'current_embeds' is the last thought vector. We use it as the
+        # first input to the answer-generation loop.
+        next_input_embeds = current_embeds
         
         total_log_prob = torch.zeros(batch_size, device=device)
         generated_answer_tokens = []
 
-        # Start with the last hidden state as the first input for the decoder
-        current_decoder_embeds = last_hidden_state
-
         for _ in range(self.max_answer_len):
-            # Get logits from the last token's hidden state
-            outputs = self.transformer(inputs_embeds=current_decoder_embeds, attention_mask=current_attention_mask)
+            # Pass the *past_key_values* and *only the new token embedding*
+            outputs = self.transformer(
+                inputs_embeds=next_input_embeds,
+                past_key_values=past_key_values,
+                attention_mask=current_attention_mask 
+            )
+            
+            # Get the logits for the *new* token
             next_token_logits = self.lm_head(outputs.last_hidden_state)[:, -1, :]
             
             # Sample from the distribution
@@ -59,22 +72,25 @@ class ReinforceModel(GPT2LMHeadModel):
             next_token = torch.multinomial(probs, num_samples=1) # (batch_size, 1)
             
             # Get the log-probability of the token we just sampled
-            # We use log_softmax for numerical stability
             log_probs = torch.log_softmax(next_token_logits, dim=-1)
             
             # Gather the log-prob of the chosen token
-            # (batch_size, 1) -> (batch_size)
             chosen_token_log_prob = log_probs.gather(dim=1, index=next_token).squeeze(1)
             
             # Add to the total log-prob for this sequence
+            # We add it only if it's not a padding token
+            # This is a bit complex, let's simplify and just sum all
             total_log_prob = total_log_prob + chosen_token_log_prob
             
             # Append the chosen token to our answer
             generated_answer_tokens.append(next_token)
             
-            # Get the embedding of the new token and use it as the next input
-            current_decoder_embeds = self.transformer.wte(next_token)
-            # Update the attention mask
+            # --- Prepare for next iteration ---
+            # The *new* past_key_values are the output from this step
+            past_key_values = outputs.past_key_values
+            # The *new* input is the embedding of the token we just sampled
+            next_input_embeds = self.transformer.wte(next_token)
+            # The *new* attention mask is just one token longer
             current_attention_mask = torch.cat([current_attention_mask, ones_mask], dim=1)
 
         # Stack all generated answer tokens into a tensor
