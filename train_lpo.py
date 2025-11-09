@@ -1,46 +1,37 @@
 import torch
 from torch.utils.data import DataLoader
-from transformers import GPT2Tokenizer
+from transformers import GPT2Tokenizer, AutoModelForCausalLMWithValueHead
 from tqdm import tqdm
 import os
 
-# Import the new TRL libraries
-from trl import PPOConfig, PPOTrainer, AutoModelForCausalLMWithValueHead
+# Import the TRL libraries
+from trl import PPOConfig, PPOTrainer
 
 # Import your project's custom files
 from src.dataset import ProsQADataset
 
 # --- 1. CONFIGURATION ---
-# Centralized configuration for the entire script
 class Config:
-    # --- Project ---
     MODEL_NAME = 'gpt2'
     TRAIN_FILE = 'data/train.jsonl'
     VAL_FILE = 'data/validation.jsonl'
     SAVE_PATH = 'saved_models/lpo_model'
     
-    # --- Model ---
-    N_THOUGHTS = 6 # The number of "thought tokens" to generate
-    MAX_QUESTION_LEN = 512 # Max tokens for the question
-    MAX_ANSWER_LEN = 50  # Max tokens for the answer
+    N_THOUGHTS = 6
+    MAX_QUESTION_LEN = 512
+    MAX_ANSWER_LEN = 50
     
-    # --- PPO Training ---
     N_EPOCHS = 6
-    LEARNING_RATE = 1e-5 # PPO often requires a smaller, more stable learning rate
+    LEARNING_RATE = 1e-5
     
-    # PPO_BATCH_SIZE is for the *update* step (from the paper's 128)
     PPO_BATCH_SIZE = 128
     PPO_MINI_BATCH_SIZE = 32
-    
-    # ROLLOUT_BATCH_SIZE is for *generating* data
-    # This must fit on your GPU.
     ROLLOUT_BATCH_SIZE = 32
 
 # --- 2. EVALUATION FUNCTION ---
-# This will evaluate our model's performance on the validation set
 def evaluate(model, tokenizer, val_loader, device):
     print("\n--- Evaluating LPO Model ---")
-    model.eval() # Set the model to evaluation mode
+    model.eval()
     total_correct_tokens = 0
     total_tokens = 0
 
@@ -50,7 +41,6 @@ def evaluate(model, tokenizer, val_loader, device):
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
 
-            # --- Generation ---
             generated_ids = model.generate(
                 input_ids,
                 attention_mask=attention_mask,
@@ -58,13 +48,9 @@ def evaluate(model, tokenizer, val_loader, device):
                 pad_token_id=tokenizer.eos_token_id
             )
             
-            # Extract *only* the newly generated tokens
             predicted_token_ids_full = generated_ids[:, input_ids.shape[1]:]
-            
-            # The model's *answer* starts after its thoughts
             predicted_answer_tokens = predicted_token_ids_full[:, Config.N_THOUGHTS:]
 
-            # --- Token-Level Accuracy Calculation ---
             num_tokens = predicted_answer_tokens.shape[1]
             label_tokens = labels[:, :num_tokens]
 
@@ -81,19 +67,18 @@ def evaluate(model, tokenizer, val_loader, device):
 # --- 3. MAIN LPO TRAINING SCRIPT ---
 def main():
     
-    # --- Setup ---
     cfg = Config()
     os.makedirs(os.path.dirname(cfg.SAVE_PATH), exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # --- PPOConfig ---
-    # This is the correct way: parameters go into the config object
+    # Parameters go into the config object
     ppo_config = PPOConfig(
         learning_rate=cfg.LEARNING_RATE,
         batch_size=cfg.PPO_BATCH_SIZE,
         mini_batch_size=cfg.PPO_MINI_BATCH_SIZE,
-        log_with=None # Set to None to disable logging
+        log_with=None
     )
 
     # --- Tokenizer ---
@@ -111,13 +96,10 @@ def main():
             "labels": torch.stack([item["labels"] for item in batch])
         }
     
-    # This loader is for our custom evaluation
     val_loader = DataLoader(val_dataset, batch_size=cfg.ROLLOUT_BATCH_SIZE, collate_fn=collate_fn)
 
     # --- Load Models ---
-    # The 'policy' model we are training (with a value head)
     model = AutoModelForCausalLMWithValueHead.from_pretrained(cfg.MODEL_NAME).to(device)
-    # The 'reference' model (untrained) to stabilize RL
     ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(cfg.MODEL_NAME).to(device)
     
     # --- Initialize PPOTrainer ---
@@ -127,7 +109,7 @@ def main():
         model=model,
         ref_model=ref_model,
         tokenizer=tokenizer,
-        dataset=train_dataset,
+        dataset=train_dataset,  # This is correct for the new version
         data_collator=collate_fn
     )
     
@@ -151,7 +133,6 @@ def main():
         progress_bar = tqdm(ppo_trainer.dataloader, desc="LPO Training")
         
         for batch in progress_bar:
-            # Note: TRL's dataloader gives us lists, not tensors
             query_tensors = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
@@ -184,7 +165,6 @@ def main():
                     rewards.append(torch.tensor(0.0, device=device))
 
             # 3. Update (Learn)
-            # We need to pass Python lists of tensors to ppo_trainer.step
             query_list = [q for q in query_tensors]
             response_list = [r for r in response_tensors]
             
@@ -194,7 +174,6 @@ def main():
             progress_bar.set_postfix({"mean_reward": f"{mean_reward:.2f}"})
         
         # --- Evaluate at the end of each epoch ---
-        # We pass model.model because 'model' is the ValueHead wrapper
         accuracy = evaluate(model.model, tokenizer, val_loader, device)
         
         # --- Save the best model ---
