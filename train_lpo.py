@@ -144,6 +144,7 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=config["ppo_batch_size"], collate_fn=collate_fn)
 
     # --- 6. INITIALIZE PPO TRAINER ---
+    # --- 6. INITIALIZE PPO TRAINER ---
     ppo_trainer = PPOTrainer(
         config=ppo_config,
         model=model,
