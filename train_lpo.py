@@ -151,14 +151,15 @@ def main():
     # This is the correct signature for modern TRL
     # --- 6. INITIALIZE PPO TRAINER ---
     # This is the correct signature for your version of TRL
+    # --- 6. INITIALIZE PPO TRAINER ---
+    # This is the correct signature for your version
     ppo_trainer = PPOTrainer(
+        config=ppo_config,      # Pass the single config object
         model=model,
         ref_model=ref_model,
-        data_collator=collate_fn,
-        # Pass parameters from the config object directly
-        learning_rate=ppo_config.learning_rate,
-        batch_size=ppo_config.batch_size,
-        mini_batch_size=ppo_config.mini_batch_size
+        tokenizer=tokenizer,    # Pass the tokenizer
+        dataset=train_dataset,  # Pass the dataset
+        data_collator=collate_fn
     )
     # Generation settings for the "thoughts" + "answer"
     # We will generate N_THOUGHTS + MAX_ANSWER_LEN tokens
@@ -176,9 +177,7 @@ def main():
     # --- 7. LPO TRAINING LOOP ---
     for epoch in range(config["n_epochs"]):
         print(f"--- Epoch {epoch+1}/{config['n_epochs']} ---")
-        # Use our manually created train_loader instead
         progress_bar = tqdm(train_loader, desc="LPO Training")
-        
         for batch in progress_bar:
             query_tensors = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
