@@ -151,7 +151,7 @@ def main():
         model=model,
         ref_model=ref_model,
         #tokenizer=tokenizer,
-        dataset=train_dataset,
+        #dataset=train_dataset,
         data_collator=collate_fn,
         # Pass parameters from the config object directly
         learning_rate=ppo_config.learning_rate,
@@ -174,7 +174,8 @@ def main():
     # --- 7. LPO TRAINING LOOP ---
     for epoch in range(config["n_epochs"]):
         print(f"--- Epoch {epoch+1}/{config['n_epochs']} ---")
-        progress_bar = tqdm(ppo_trainer.dataloader, desc="LPO Training")
+        # Use our manually created train_loader instead
+        progress_bar = tqdm(train_loader, desc="LPO Training")
         
         for batch in progress_bar:
             query_tensors = batch['input_ids'].to(device)
