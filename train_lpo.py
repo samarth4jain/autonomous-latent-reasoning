@@ -150,7 +150,7 @@ def main():
         # config=ppo_config, # This argument is no longer used
         model=model,
         ref_model=ref_model,
-        tokenizer=tokenizer,
+        #tokenizer=tokenizer,
         dataset=train_dataset,
         data_collator=collate_fn,
         # Pass parameters from the config object directly
