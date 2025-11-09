@@ -19,6 +19,7 @@ class A2CModel(GPT2LMHeadModel):
         It generates an answer and, at each step, outputs:
         1. The log-probability of the token it chose (for the Actor)
         2. The "value" of that state (for the Critic)
+        3. The full logits (for Entropy)
         """
         
         device = input_ids.device
@@ -51,6 +52,7 @@ class A2CModel(GPT2LMHeadModel):
         
         all_log_probs = []
         all_values = []
+        all_logits = [] # <-- NEW
         generated_answer_tokens = []
 
         for _ in range(self.max_answer_len):
@@ -61,25 +63,23 @@ class A2CModel(GPT2LMHeadModel):
                 use_cache=True
             )
             
-            # Get the hidden state for the new token
             hidden_state = outputs.last_hidden_state
             
             # --- ACTOR ---
             next_token_logits = self.lm_head(hidden_state)[:, -1, :]
+            all_logits.append(next_token_logits) # <-- NEW
+            
             log_probs_dist = torch.log_softmax(next_token_logits, dim=-1)
             probs = torch.softmax(next_token_logits, dim=-1)
             next_token = torch.multinomial(probs, num_samples=1)
             
             # --- CRITIC ---
-            # Get the Critic's "value" prediction for this state
-            value = self.critic_head(hidden_state)[:, -1, :] # (batch_size, 1)
+            value = self.critic_head(hidden_state)[:, -1, :]
             all_values.append(value)
 
-            # Get the log-prob of the token we just sampled
             chosen_token_log_prob = log_probs_dist.gather(dim=1, index=next_token)
             all_log_probs.append(chosen_token_log_prob)
             
-            # Append the chosen token to our answer
             generated_answer_tokens.append(next_token)
             
             # --- Prepare for next iteration ---
@@ -87,9 +87,11 @@ class A2CModel(GPT2LMHeadModel):
             next_input_embeds = self.transformer.wte(next_token)
             current_attention_mask = torch.cat([current_attention_mask, ones_mask], dim=1)
 
-        # Stack all generated answer tokens, log-probs, and values
+        # Stack all tensors
         answer_tensor = torch.stack(generated_answer_tokens, dim=1).squeeze(2)
         all_log_probs = torch.stack(all_log_probs, dim=1).squeeze(2)
         all_values = torch.stack(all_values, dim=1).squeeze(2)
+        all_logits = torch.stack(all_logits, dim=1) # <-- NEW
         
-        return answer_tensor, all_log_probs, all_values
+        # --- NEW RETURN ---
+        return answer_tensor, all_log_probs, all_values, all_logits
