@@ -151,32 +151,40 @@ def main():
                 query_list,
                 **generation_kwargs
             )
-            # 2. Get Reward
+            # 2. Get Reward (Iterate over the batch)
             rewards = []
             
-            label_ids = labels.clone()
-            label_ids[label_ids == -100] = tokenizer.pad_token_id
-            ground_truth_texts = tokenizer.batch_decode(label_ids, skip_special_tokens=True)
-            
-            answer_tokens = generated_part[:, cfg.N_THOUGHTS:]
-            generated_texts = tokenizer.batch_decode(answer_tokens, skip_special_tokens=True)
-            
-            for gen_text, truth_text in zip(generated_texts, ground_truth_texts):
-                gen_answer = gen_text.split(tokenizer.eos_token)[0].strip()
-                truth_answer = truth_text.split(tokenizer.eos_token)[0].strip()
+            # We iterate over each item in the batch one by one
+            for i in range(len(query_tensors)):
+                query = query_tensors[i]
+                label = labels[i]
+                response = response_tensors[i] # Get the i-th tensor from the list
+
+                # Get only the generated part of the response
+                generated_part = response[len(query):]
                 
+                # Get the answer part (after the thoughts)
+                answer_tokens = generated_part[cfg.N_THOUGHTS:]
+                
+                # Decode the generated answer
+                gen_answer_text = tokenizer.decode(answer_tokens, skip_special_tokens=True)
+                gen_answer = gen_answer_text.split(tokenizer.eos_token)[0].strip()
+                
+                # Decode the ground truth answer
+                label_ids = label.clone()
+                label_ids[label_ids == -100] = tokenizer.pad_token_id
+                truth_text = tokenizer.decode(label_ids, skip_special_tokens=True)
+                truth_answer = truth_text.split(tokenizer.eos_token)[0].strip()
+
+                # Compare and append reward
                 if gen_answer == truth_answer:
                     rewards.append(torch.tensor(1.0, device=device))
                 else:
                     rewards.append(torch.tensor(0.0, device=device))
 
             # 3. Update (Learn)
-            # 3. Update (Learn)
-            # 'query_list' is already defined above.
-            # We just need to convert response_tensors to a list.
-            response_list = [r for r in response_tensors]
-            
-            stats = ppo_trainer.step(query_list, response_list, rewards)
+            # We pass the original lists to the trainer
+            stats = ppo_trainer.step(query_list, response_tensors, rewards)
             mean_reward = torch.mean(torch.stack(rewards)).item()
             progress_bar.set_postfix({"mean_reward": f"{mean_reward:.2f}"})
         
