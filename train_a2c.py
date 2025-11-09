@@ -17,12 +17,12 @@ class Config:
     SAVE_PATH = 'saved_models/a2c_model' # New save path
     
     N_THOUGHTS = 6
-    MAX_QUESTION_LEN = 512
+    MAX_QUESTION_LEN = 256
     MAX_ANSWER_LEN = 50
     
     N_EPOCHS = 6
-    LEARNING_RATE = 1e-5 # A2C can be sensitive
-    BATCH_SIZE = 32      # Use a batch size your GPU can handle
+    LEARNING_RATE = 1e-4 # A2C can be sensitive
+    BATCH_SIZE = 16      # Use a batch size your GPU can handle
     GAMMA = 0.99         # Discount factor for future rewards
 
 # --- 2. REWARD FUNCTION (DENSE REWARD) ---
