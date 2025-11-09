@@ -157,7 +157,7 @@ def main():
         ppo_config,      # Pass the single config object
         model=model,
         ref_model=ref_model,
-        tokenizer=tokenizer,    # Pass the tokenizer
+        #tokenizer=tokenizer,    # Pass the tokenizer
         dataset=train_dataset,  # Pass the dataset
         data_collator=collate_fn
     )
