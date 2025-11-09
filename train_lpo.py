@@ -83,9 +83,11 @@ def main():
     )
 
         # --- Tokenizer ---
+    # --- Tokenizer ---
     tokenizer = GPT2Tokenizer.from_pretrained(cfg.MODEL_NAME)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left" # <-- ADD THIS LINE
+
     # --- Datasets and DataLoaders ---
     train_dataset = ProsQADataset(cfg.TRAIN_FILE, tokenizer, cfg.MAX_QUESTION_LEN, cfg.MAX_ANSWER_LEN)
     val_dataset = ProsQADataset(cfg.VAL_FILE, tokenizer, cfg.MAX_QUESTION_LEN, cfg.MAX_ANSWER_LEN)
