@@ -184,7 +184,7 @@ def main():
             # 3. Update (Learn)
             # We pass the original lists to the trainer
             # Pass the attention masks for the queries to the step function
-            stats = ppo_trainer.step(query_list, response_list, rewards, masks=mask_list)
+            stats = ppo_trainer.step(query_list, response_tensors, rewards, masks=mask_list)
             mean_reward = torch.mean(torch.stack(rewards)).item()
             progress_bar.set_postfix({"mean_reward": f"{mean_reward:.2f}"})
         
