@@ -154,7 +154,7 @@ def main():
     # --- 6. INITIALIZE PPO TRAINER ---
     # This is the correct signature for your version
     ppo_trainer = PPOTrainer(
-        config=ppo_config,      # Pass the single config object
+        ppo_config,      # Pass the single config object
         model=model,
         ref_model=ref_model,
         tokenizer=tokenizer,    # Pass the tokenizer
