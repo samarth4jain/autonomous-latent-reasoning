@@ -68,7 +68,7 @@ def main():
     SAVE_PATH = 'saved_models/baseline_model'
     
     # Using full batch size as your server can handle it
-    BATCH_SIZE = 32    
+    BATCH_SIZE = 16    
     LEARNING_RATE = 1e-4 # From the paper
     N_EPOCHS = 6 # From the paper's initial stage
     N_THOUGHTS = 6 # From the paper for logical reasoning [cite: 182-183]
