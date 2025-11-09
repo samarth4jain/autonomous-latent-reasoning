@@ -24,29 +24,41 @@ class Config:
     BATCH_SIZE = 16      # Use a batch size your GPU can handle
 
 # --- 2. REWARD FUNCTION ---
+# --- 2. REWARD FUNCTION (NEW DENSE REWARD) ---
 def compute_reward(generated_tokens, label_tokens, tokenizer):
     """
-    Compares generated tokens to label tokens and returns a reward.
-    Returns a tensor of rewards (1.0 or 0.0) for each item in the batch.
+    Compares generated tokens to label tokens and returns a "dense" reward
+    based on token-level accuracy.
     """
     device = generated_tokens.device
     batch_size = generated_tokens.shape[0]
     rewards = torch.zeros(batch_size, device=device)
 
-    # Decode all generated answers in the batch
-    gen_texts = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-    
-    # Decode all ground-truth answers in the batch
-    label_ids = label_tokens.clone()
-    label_ids[label_ids == -100] = tokenizer.pad_token_id
-    truth_texts = tokenizer.batch_decode(label_ids, skip_special_tokens=True)
-
+    # We must iterate over each item in the batch
     for i in range(batch_size):
-        gen_answer = gen_texts[i].split(tokenizer.eos_token)[0].strip()
-        truth_answer = truth_texts[i].split(tokenizer.eos_token)[0].strip()
+        gen_toks = generated_tokens[i]
+        label_toks = label_tokens[i]
+
+        # Get the same number of tokens to compare
+        num_tokens = min(len(gen_toks), len(label_toks))
+        if num_tokens == 0:
+            continue
+
+        gen_toks = gen_toks[:num_tokens]
+        label_toks = label_toks[:num_tokens]
+
+        # Create a mask for non-padding tokens
+        valid_labels_mask = label_toks != -100
         
-        if gen_answer == truth_answer:
-            rewards[i] = 1.0
+        # Count correct tokens
+        correct_tokens = (gen_toks == label_toks) & valid_labels_mask
+        
+        num_correct = correct_tokens.sum().item()
+        num_total_valid = valid_labels_mask.sum().item()
+
+        if num_total_valid > 0:
+            # The reward is the percentage of correct tokens
+            rewards[i] = num_correct / num_total_valid
             
     return rewards
 
