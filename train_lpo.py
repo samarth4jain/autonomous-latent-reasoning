@@ -90,10 +90,10 @@ def main():
         "lr": 1e-5, # PPO often requires a smaller learning rate
         "n_epochs": 6,
         "n_thoughts": 6,
-        "max_q_len": 512,
+        "max_q_len": 256,
         "max_a_len": 50,
-        "ppo_batch_size": 128, # This is the batch size for the PPO update
-        "mini_batch_size": 32, # This is the mini-batch size for the PPO update
+        "ppo_batch_size": 16, # This is the batch size for the PPO update
+        "mini_batch_size": 16, # This is the mini-batch size for the PPO update
     }
     
     # PPO-specific config
