@@ -136,17 +136,16 @@ def main():
         progress_bar = tqdm(ppo_trainer.dataloader, desc="LPO Training")
         
         for batch in progress_bar:
+            # Note: TRL's dataloader gives us lists, not tensors
             query_tensors = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
+            attention_mask_tensors = batch['attention_mask'].to(device) # <-- RENAMED
             labels = batch['labels'].to(device)
 
-            # Convert the batched tensor to a list of 1D tensors *before* generate
-            # This is what the error message is asking for.
+            # Convert the batched tensor to a list of 1D tensors
             query_list = [q for q in query_tensors]
+            mask_list = [m for m in attention_mask_tensors] # <-- ADD THIS LINE
 
             # 1. Act (Rollout)
-            # 1. Act (Rollout)
-            # response_tensors will be a LIST of 1D tensors of varying lengths
             response_tensors = ppo_trainer.generate(
                 query_list,
                 **generation_kwargs
@@ -184,7 +183,8 @@ def main():
 
             # 3. Update (Learn)
             # We pass the original lists to the trainer
-            stats = ppo_trainer.step(query_list, response_tensors, rewards)
+            # Pass the attention masks for the queries to the step function
+            stats = ppo_trainer.step(query_list, response_list, rewards, masks=mask_list)
             mean_reward = torch.mean(torch.stack(rewards)).item()
             progress_bar.set_postfix({"mean_reward": f"{mean_reward:.2f}"})
         
