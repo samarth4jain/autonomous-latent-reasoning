@@ -145,7 +145,7 @@ def main():
             # 1. Act (Rollout)
             response_tensors = ppo_trainer.generate(
                 query_list,  # Pass the list here
-                attention_mask=attention_mask,
+                #attention_mask=attention_mask,
                 **generation_kwargs
             )
             
