@@ -17,12 +17,12 @@ class Config:
     SAVE_PATH = 'saved_models/a2c_rnd_model'
     
     N_THOUGHTS = 6
-    MAX_QUESTION_LEN = 512
+    MAX_QUESTION_LEN = 256
     MAX_ANSWER_LEN = 50
     
     N_EPOCHS = 6
     LEARNING_RATE = 1e-5
-    BATCH_SIZE = 32
+    BATCH_SIZE = 16
     GAMMA = 0.99
     
     # RND Parameters
