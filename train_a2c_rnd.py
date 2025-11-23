@@ -20,13 +20,14 @@ class Config:
     MAX_QUESTION_LEN = 512
     MAX_ANSWER_LEN = 50
     
-    N_EPOCHS = 6
+    N_EPOCHS = 6  # You can increase this to 10 or 12 if you have time overnight!
     LEARNING_RATE = 1e-5
-    BATCH_SIZE = 8  # Kept at 8 to avoid OOM
+    BATCH_SIZE = 8
     GAMMA = 0.99
     
-    # RND Parameters
-    INTRINSIC_COEF = 0.5 
+    # --- THE FIX ---
+    # Drastically reduce curiosity so the model focuses on the BLEU score
+    INTRINSIC_COEF = 0.01 
     ENTROPY_COEF = 0.01
 
 def compute_bleu_reward(generated_tokens, label_tokens, tokenizer, device):
