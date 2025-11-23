@@ -17,17 +17,16 @@ class Config:
     SAVE_PATH = 'saved_models/a2c_rnd_model'
     
     N_THOUGHTS = 6
-    MAX_QUESTION_LEN = 256
+    MAX_QUESTION_LEN = 512
     MAX_ANSWER_LEN = 50
     
     N_EPOCHS = 6
     LEARNING_RATE = 1e-5
-    BATCH_SIZE = 16
+    BATCH_SIZE = 8  # Kept at 8 to avoid OOM
     GAMMA = 0.99
     
     # RND Parameters
-    # We mix Extrinsic (Task) and Intrinsic (Curiosity) rewards
-    INTRINSIC_COEF = 0.5  
+    INTRINSIC_COEF = 0.5 
     ENTROPY_COEF = 0.01
 
 def compute_bleu_reward(generated_tokens, label_tokens, tokenizer, device):
@@ -50,7 +49,8 @@ def compute_bleu_reward(generated_tokens, label_tokens, tokenizer, device):
         else:
             rewards.append(0.0)
             
-    return torch.tensor(rewards, device=device)
+    # --- FIX IS HERE: Force dtype=torch.float32 ---
+    return torch.tensor(rewards, device=device, dtype=torch.float32)
 
 def evaluate(model, tokenizer, val_loader, device):
     print("\n--- Evaluating ---")
@@ -63,12 +63,10 @@ def evaluate(model, tokenizer, val_loader, device):
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
             
-            # Only need answer tokens for accuracy check
             gen_tokens, _, _, _ = model(input_ids, attention_mask)
             
             for i in range(gen_tokens.shape[0]):
                 valid_label = labels[i][labels[i] != -100]
-                # Take same length from prediction to compare
                 pred = gen_tokens[i][:len(valid_label)]
                 
                 if len(pred) == len(valid_label) and torch.equal(pred, valid_label):
@@ -94,7 +92,7 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=cfg.BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=cfg.BATCH_SIZE)
 
-    # 1. Load Agent (A2C) - FROM SCRATCH
+    # 1. Load Agent (A2C)
     agent = A2CModel.from_pretrained(cfg.MODEL_NAME, n_thoughts=cfg.N_THOUGHTS, max_answer_len=cfg.MAX_ANSWER_LEN).to(device)
     
     # 2. Load Curiosity Module (RND)
@@ -108,13 +106,13 @@ def main():
     best_acc = -1.0
 
     for epoch in range(cfg.N_EPOCHS):
+        print(f"--- Epoch {epoch+1} ---")
         agent.train()
         rnd_model.train()
-        print(f"--- Epoch {epoch+1} ---")
         
         progress = tqdm(train_loader, desc="Training")
-        total_ext_reward = 0
-        total_int_reward = 0
+        total_ext_reward = 0.0
+        total_int_reward = 0.0
         
         for batch in progress:
             input_ids = batch['input_ids'].to(device)
@@ -125,44 +123,36 @@ def main():
             optimizer_rnd.zero_grad()
 
             # --- 1. Rollout ---
-            # Agent generates experience
             answer_tokens, log_probs, values, all_logits = agent(input_ids, mask)
 
             # --- 2. Calculate Rewards ---
-            # Extrinsic: BLEU score against ground truth
             reward_ext = compute_bleu_reward(answer_tokens, labels, tokenizer, device)
-            
-            # Intrinsic: Curiosity (Prediction Error)
             rnd_loss, reward_int = rnd_model(answer_tokens)
+            
+            # Detach intrinsic reward
+            reward_int = reward_int.detach()
             
             # Combine Rewards
             total_reward = (1 - cfg.INTRINSIC_COEF) * reward_ext + (cfg.INTRINSIC_COEF * reward_int)
             
             # --- 3. Train RND ---
-            # Update predictor to match target better next time
             rnd_loss.backward()
             optimizer_rnd.step()
 
             # --- 4. Train Agent (A2C) ---
-            # Calculate Returns (R) and Advantages (A)
             returns = torch.zeros_like(values)
             advantages = torch.zeros_like(values)
             R = 0.0
             
             for t in reversed(range(cfg.MAX_ANSWER_LEN)):
-                # Reward given at the last step
                 r_t = total_reward if t == (cfg.MAX_ANSWER_LEN - 1) else 0.0
                 R = r_t + cfg.GAMMA * R
                 returns[:, t] = R
                 advantages[:, t] = R - values[:, t].detach()
 
-            # Actor Loss: -log_prob * advantage
             actor_loss = -(log_probs * advantages).mean()
-            
-            # Critic Loss: MSE(value_pred, return)
             critic_loss = (values - returns).pow(2).mean()
             
-            # Entropy Bonus (Exploration)
             probs = torch.softmax(all_logits, dim=-1)
             log_probs_all = torch.log_softmax(all_logits, dim=-1)
             entropy = -(probs * log_probs_all).sum(dim=-1).mean()
@@ -173,19 +163,22 @@ def main():
             loss_agent.backward()
             optimizer_agent.step()
 
-            # Logging
-            total_ext_reward += reward_ext.mean().item()
-            total_int_reward += reward_int.mean().item()
+            # Logging (With explicit float conversion for safety)
+            current_ext = reward_ext.float().mean().item()
+            current_int = reward_int.float().mean().item()
+            
+            total_ext_reward += current_ext
+            total_int_reward += current_int
+            
             progress.set_postfix({
-                "Ext_R": f"{reward_ext.mean().item():.3f}",
-                "Int_R": f"{reward_int.mean().item():.3f}",
+                "Ext_R": f"{current_ext:.3f}",
+                "Int_R": f"{current_int:.3f}",
                 "Loss": f"{loss_agent.item():.3f}"
             })
 
-        # Stats
         avg_ext = total_ext_reward / len(train_loader)
         avg_int = total_int_reward / len(train_loader)
-        print(f"Avg Extrinsic Reward: {avg_ext:.4f} | Avg Intrinsic Reward: {avg_int:.4f}")
+        print(f"Avg Extrinsic: {avg_ext:.4f} | Avg Intrinsic: {avg_int:.4f}")
 
         # Evaluation
         acc = evaluate(agent, tokenizer, val_loader, device)
@@ -194,6 +187,8 @@ def main():
             agent.save_pretrained(cfg.SAVE_PATH)
             tokenizer.save_pretrained(cfg.SAVE_PATH)
             print("Saved new best model.")
+
+    print(f"Training complete. Best Acc: {best_acc:.2f}%")
 
 if __name__ == "__main__":
     main()
