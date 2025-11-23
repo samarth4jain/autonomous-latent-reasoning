@@ -5,7 +5,7 @@ from transformers import GPT2Tokenizer
 from tqdm import tqdm
 import os
 
-# Import our *new* A2C model and our *existing* dataset
+# Import our A2C model and dataset
 from src.a2c_model import A2CModel
 from src.dataset import ProsQADataset
 
@@ -14,22 +14,22 @@ class Config:
     MODEL_NAME = 'gpt2'
     TRAIN_FILE = 'data/train.jsonl'
     VAL_FILE = 'data/validation.jsonl'
-    SAVE_PATH = 'saved_models/a2c_model' # New save path
+    SAVE_PATH = 'saved_models/a2c_model'
     
     N_THOUGHTS = 6
-    MAX_QUESTION_LEN = 256
+    MAX_QUESTION_LEN = 512
     MAX_ANSWER_LEN = 50
     
     N_EPOCHS = 6
-    LEARNING_RATE = 1e-4 # A2C can be sensitive
-    BATCH_SIZE = 16      # Use a batch size your GPU can handle
-    GAMMA = 0.99         # Discount factor for future rewards
+    LEARNING_RATE = 1e-5 
+    BATCH_SIZE = 32      
+    GAMMA = 0.99         # Discount factor
 
 # --- 2. REWARD FUNCTION (DENSE REWARD) ---
 def compute_reward(generated_tokens, label_tokens, tokenizer):
     """
     Compares generated tokens to label tokens and returns a "dense" reward
-    based on token-level accuracy. Returns a final reward for the *whole sequence*.
+    based on token-level accuracy.
     """
     device = generated_tokens.device
     batch_size = generated_tokens.shape[0]
@@ -70,7 +70,8 @@ def evaluate(model, tokenizer, val_loader, device):
             labels = batch['labels'].to(device)
 
             # Use our new model's generate function
-            generated_answer_tokens, _, _ = model(input_ids, attention_mask)
+            # We ignore the extra return values using underscores
+            generated_answer_tokens, _, _, _ = model(input_ids, attention_mask)
             predicted_answer_tokens = generated_answer_tokens
 
             num_tokens = predicted_answer_tokens.shape[1]
@@ -106,9 +107,10 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=cfg.BATCH_SIZE)
 
     # --- Load Model ---
-    # We load our new A2CModel
+    # We load our A2CModel (from scratch or warm start depending on your choice)
+    # Currently set to 'gpt2' (scratch) per your instruction
     model = A2CModel.from_pretrained(
-        cfg.MODEL_NAME, # Train from scratch
+        cfg.MODEL_NAME, 
         n_thoughts=cfg.N_THOUGHTS, 
         max_answer_len=cfg.MAX_ANSWER_LEN
     ).to(device)
@@ -132,12 +134,10 @@ def main():
             optimizer.zero_grad()
 
             # 1. Act & Criticize (Rollout)
-            # Get generated answer, log-probs, and critic values
-            answer_tokens, log_probs, values = model(input_ids, attention_mask)
+            # --- FIX IS HERE: Added underscore to catch the 4th return value (logits) ---
+            answer_tokens, log_probs, values, _ = model(input_ids, attention_mask)
 
             # 2. Get Final Reward
-            # Compare the full generated answer to the ground-truth
-            # This returns a reward for each item in the batch
             final_rewards = compute_reward(answer_tokens, labels, tokenizer)
             total_epoch_reward += final_rewards.mean().item()
             
@@ -145,26 +145,22 @@ def main():
             returns = torch.zeros_like(values)
             advantages = torch.zeros_like(values)
             
-            R = 0.0 # Initial return
-            # Loop backwards from the last token to the first
+            R = 0.0 
             for t in reversed(range(cfg.MAX_ANSWER_LEN)):
-                # If it's the last step, the return is just the final reward
-                # Otherwise, the reward for this step is 0
                 step_reward = final_rewards if t == cfg.MAX_ANSWER_LEN - 1 else 0.0
-                
                 R = step_reward + cfg.GAMMA * R
                 returns[:, t] = R
                 advantages[:, t] = R - values[:, t]
 
             # 4. Calculate Loss
-            # Actor Loss: -log_prob * advantage (we detach advantage)
+            # Actor Loss
             actor_loss = -torch.mean(log_probs * advantages.detach())
             
-            # Critic Loss: Mean Squared Error between predicted values and actual returns
-            critic_loss = torch.mean(advantages.pow(2)) # or F.mse_loss(values, returns)
+            # Critic Loss
+            critic_loss = torch.mean(advantages.pow(2))
             
-            # Total Loss:
-            total_loss = actor_loss + 0.5 * critic_loss # 0.5 is a common scaling factor
+            # Total Loss
+            total_loss = actor_loss + 0.5 * critic_loss
             
             # 5. Update (Learn)
             total_loss.backward()
@@ -188,7 +184,7 @@ def main():
             tokenizer.save_pretrained(cfg.SAVE_PATH)
             
     print(f"A2C Training complete! Best validation accuracy: {best_accuracy:.2f}%")
-    print(f"Baseline accuracy was: 42.95%") # Your benchmark
+    print(f"Baseline accuracy was: 42.95%") 
 
 if __name__ == "__main__":
     main()
