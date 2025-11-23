@@ -18,7 +18,7 @@ class Config:
     MAX_ANSWER_LEN = 50
     
     # STaR Parameters
-    N_EPOCHS = 10          # More epochs because we build data iteratively
+    N_EPOCHS = 6          # More epochs because we build data iteratively
     LEARNING_RATE = 1e-5
     BATCH_SIZE = 8         # Keep small for generation
     NUM_SAMPLES = 8        # How many attempts per question (Exploration width)
