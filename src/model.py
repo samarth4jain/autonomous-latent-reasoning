@@ -33,26 +33,17 @@ class ContinuousThoughtModel(GPT2LMHeadModel):
         current_embeds = inputs_embeds
         current_attention_mask = attention_mask
 
-        # --- CRITICAL FIX FOR POSITION IDS ---
-        # The 'generate' loop passes position_ids based on the input text length.
-        # But we are inserting N thoughts, so the real positions are shifted.
+        # --- Position ID Correction ---
         if position_ids is not None:
             if past_key_values is None:
-                # Phase 1: Prompt Processing
-                # The provided position_ids are too short (e.g., 400) because they don't include thoughts.
-                # We set to None so GPT2 automatically generates 0..400+N correctly.
                 position_ids = None 
             else:
-                # Phase 2: Token Generation
-                # The generator thinks we are at pos 400, but we are really at 400+N.
-                # We shift the position_ids to match reality.
                 position_ids = position_ids + self.n_thoughts
 
-        # 2. Generate Thoughts (Only if this is the first pass)
+        # 2. Generate Thoughts (First Pass Only)
         if past_key_values is None and current_embeds is not None:
             batch_size = current_embeds.shape[0]
             device = current_embeds.device
-            ones_mask = torch.ones(batch_size, 1, dtype=torch.long, device=device)
             
             for _ in range(self.n_thoughts):
                 outputs = self.transformer(
@@ -66,16 +57,31 @@ class ContinuousThoughtModel(GPT2LMHeadModel):
                 
                 current_embeds = torch.cat([current_embeds, thought_vector], dim=1)
                 
-                if current_attention_mask is not None:
-                    current_attention_mask = torch.cat([current_attention_mask, ones_mask], dim=1)
+                # (Note: We intentionally skip updating the mask inside the loop 
+                # and handle it safely below to avoid the size mismatch bug)
 
-        # 3. Standard Transformer Forward Pass
+        # --- SAFETY FIX: Force Mask to Match Embedding Size ---
+        if current_attention_mask is not None and current_embeds is not None:
+            embed_len = current_embeds.shape[1]
+            mask_len = current_attention_mask.shape[1]
+            
+            if mask_len < embed_len:
+                diff = embed_len - mask_len
+                # Create a mask of 1s for the new thought tokens
+                padding = torch.ones(
+                    (current_attention_mask.shape[0], diff), 
+                    dtype=current_attention_mask.dtype, 
+                    device=current_attention_mask.device
+                )
+                current_attention_mask = torch.cat([current_attention_mask, padding], dim=1)
+
+        # 3. Standard Forward Pass
         transformer_outputs = self.transformer(
             inputs_embeds=current_embeds,
             past_key_values=past_key_values,
             attention_mask=current_attention_mask,
             token_type_ids=token_type_ids,
-            position_ids=position_ids, # Pass the corrected positions
+            position_ids=position_ids,
             head_mask=head_mask,
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_attention_mask,
@@ -88,12 +94,10 @@ class ContinuousThoughtModel(GPT2LMHeadModel):
         hidden_states = transformer_outputs[0]
         lm_logits = self.lm_head(hidden_states)
 
-        # 4. Calculate Loss (Training Mode Only)
+        # 4. Loss Calculation
         loss = None
         if labels is not None:
             loss_fct = nn.CrossEntropyLoss()
-            
-            # Use only the thought logits to predict the answer
             thought_logits = lm_logits[:, -self.n_thoughts:, :]
             num_tokens_to_compare = min(self.n_thoughts, labels.shape[1])
             
