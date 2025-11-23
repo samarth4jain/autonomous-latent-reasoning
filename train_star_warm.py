@@ -6,13 +6,13 @@ from tqdm import tqdm
 import os
 import random
 
-# Reuse your existing dataset and model classes
+# Import your project's custom files
 from src.dataset import ProsQADataset
 from src.model import ContinuousThoughtModel
 
 class Config:
     # --- CRITICAL CHANGE: WARM START ---
-    # We start with the smart model, not the dumb one
+    # We start with the smart model (baseline), not the dumb one (gpt2)
     MODEL_PATH = 'saved_models/baseline_model' 
     
     TRAIN_FILE = 'data/train.jsonl'
@@ -24,26 +24,31 @@ class Config:
     MAX_ANSWER_LEN = 50
     
     N_EPOCHS = 5
-    # Low learning rate to gently improve the model
+    # Low learning rate to gently improve the model without breaking it
     LEARNING_RATE = 5e-6 
     BATCH_SIZE = 8
     
-    # Sampling: Generate 8 attempts, keep the winners
+    # Sampling: Generate 8 attempts per question
     NUM_SAMPLES = 8
     TEMPERATURE = 1.0
     MAX_GRAD_NORM = 1.0
 
+# --- 1. EVALUATION FUNCTION (Token Accuracy) ---
+# This metric allows partial credit, so you can see if the model is improving
+# even if it doesn't get the full sentence perfectly right.
 def evaluate(model, tokenizer, val_loader, device):
-    print("\n--- Evaluating ---")
+    print("\n--- Evaluating (Token Accuracy) ---")
     model.eval()
-    correct = 0
-    total = 0
+    total_correct = 0
+    total_tokens = 0
+    
     with torch.no_grad():
         for batch in tqdm(val_loader, desc="Eval"):
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
 
+            # Use greedy decoding for evaluation
             generated_ids = model.generate(
                 input_ids,
                 attention_mask=attention_mask,
@@ -51,18 +56,29 @@ def evaluate(model, tokenizer, val_loader, device):
                 pad_token_id=tokenizer.eos_token_id
             )
             
+            # Extract generated answer (remove input + thoughts)
             full_gen = generated_ids[:, input_ids.shape[1]:]
             gen_answer_tokens = full_gen[:, Config.N_THOUGHTS:]
             
+            # Calculate Token Accuracy
             for i in range(gen_answer_tokens.shape[0]):
                 valid_label = labels[i][labels[i] != -100]
-                pred = gen_answer_tokens[i][:len(valid_label)]
-                if len(pred) == len(valid_label) and torch.equal(pred, valid_label):
-                    correct += 1
-                total += 1
                 
-    acc = (correct / total) * 100 if total > 0 else 0
-    print(f"Validation Accuracy: {acc:.2f}%")
+                # Truncate prediction to match label length for valid comparison
+                pred = gen_answer_tokens[i][:len(valid_label)]
+                
+                # Count matching tokens
+                if len(pred) == len(valid_label):
+                     matches = (pred == valid_label).sum().item()
+                     total_correct += matches
+                     total_tokens += len(valid_label)
+                elif len(pred) < len(valid_label):
+                     matches = (pred == valid_label[:len(pred)]).sum().item()
+                     total_correct += matches
+                     total_tokens += len(valid_label)
+                
+    acc = (total_correct / total_tokens) * 100 if total_tokens > 0 else 0
+    print(f"Validation Token Accuracy: {acc:.2f}%")
     return acc
 
 def main():
@@ -71,7 +87,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Load Tokenizer (Try loading from saved model, fallback to gpt2)
+    # Load Tokenizer
     try:
         tokenizer = GPT2Tokenizer.from_pretrained(cfg.MODEL_PATH)
     except:
@@ -80,15 +96,16 @@ def main():
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
+    # Load Data
     train_dataset = ProsQADataset(cfg.TRAIN_FILE, tokenizer, cfg.MAX_QUESTION_LEN, cfg.MAX_ANSWER_LEN)
     val_dataset = ProsQADataset(cfg.VAL_FILE, tokenizer, cfg.MAX_QUESTION_LEN, cfg.MAX_ANSWER_LEN)
     
-    # Gen loader needs shuffle to find diverse examples
     gen_loader = DataLoader(train_dataset, batch_size=cfg.BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=cfg.BATCH_SIZE)
 
     # --- LOAD WARM START MODEL ---
     print(f"Loading Warm Start Model from: {cfg.MODEL_PATH}")
+    # We use the custom model class to support thoughts
     model = ContinuousThoughtModel.from_pretrained(
         cfg.MODEL_PATH, 
         n_thoughts=cfg.N_THOUGHTS
@@ -96,7 +113,7 @@ def main():
     
     optimizer = AdamW(model.parameters(), lr=cfg.LEARNING_RATE)
     
-    # Initial Baseline Check
+    # Check Baseline Accuracy
     print("Checking baseline accuracy...")
     best_accuracy = evaluate(model, tokenizer, val_loader, device)
     print(f"Starting Baseline Accuracy: {best_accuracy:.2f}%")
@@ -109,8 +126,7 @@ def main():
         model.eval()
         successful_examples = []
         
-        # We only need a few hundred good examples to improve
-        # Stop after checking 500 batches to save time
+        # Check 500 batches per epoch to save time
         batches_to_check = 500
         
         for i, batch in enumerate(tqdm(gen_loader, desc="Exploration")):
@@ -120,7 +136,7 @@ def main():
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
             
-            # Repeat inputs to generate multiple attempts per question
+            # Generate multiple samples per question
             expanded_input_ids = input_ids.repeat_interleave(cfg.NUM_SAMPLES, dim=0)
             expanded_attention_mask = attention_mask.repeat_interleave(cfg.NUM_SAMPLES, dim=0)
             
@@ -130,14 +146,14 @@ def main():
                     attention_mask=expanded_attention_mask,
                     max_new_tokens=cfg.N_THOUGHTS + cfg.MAX_ANSWER_LEN,
                     pad_token_id=tokenizer.eos_token_id,
-                    do_sample=True,
+                    do_sample=True, # Critical for finding new paths
                     temperature=cfg.TEMPERATURE, 
                     top_k=50
                 )
             
             gen_sequences = generated_ids[:, input_ids.shape[1]:]
             
-            # Filter for correct answers
+            # Filter: Keep only the samples that got the answer right
             for j in range(input_ids.shape[0]):
                 label = labels[j]
                 valid_label = label[label != -100]
@@ -148,7 +164,7 @@ def main():
                     pred_answer = full_seq[cfg.N_THOUGHTS : cfg.N_THOUGHTS + len(valid_label)]
                     
                     if torch.equal(pred_answer, valid_label):
-                        # Found a winner! Save it for training.
+                        # Found a winner! Save it.
                         successful_examples.append({
                             "input_ids": input_ids[j],
                             "labels": labels[j] 
@@ -159,7 +175,7 @@ def main():
         print(f">> Found {len(successful_examples)} successful reasoning paths.")
         
         if len(successful_examples) == 0:
-            print("!! No successful paths found. This shouldn't happen with a warm start.")
+            print("!! No successful paths found. This is unexpected with a warm start.")
             continue
 
         # --- PHASE 2: TRAINING (Fine-Tuning) ---
@@ -173,15 +189,16 @@ def main():
         for i in range(0, len(successful_examples), cfg.BATCH_SIZE):
             batch_data = successful_examples[i : i + cfg.BATCH_SIZE]
             
+            if not batch_data: continue
+
             b_input_ids = torch.stack([x["input_ids"] for x in batch_data]).to(device)
             b_labels = torch.stack([x["labels"] for x in batch_data]).to(device)
             
-            # Basic mask
             b_attention_mask = (b_input_ids != tokenizer.pad_token_id).long()
 
             optimizer.zero_grad()
             
-            # Pass labels to calculate loss directly
+            # Forward pass (calculates loss internally)
             outputs = model(
                 input_ids=b_input_ids, 
                 attention_mask=b_attention_mask,
