@@ -14,15 +14,18 @@ class Config:
     SAVE_PATH = 'saved_models/star_model'
     
     N_THOUGHTS = 6
-    MAX_QUESTION_LEN = 512
+    # --- FIX HERE ---
+    # Reduced from 512 to 400 to leave room for thoughts (6) + answer (50)
+    # 400 + 6 + 50 = 456, which fits safely inside the 512 limit.
+    MAX_QUESTION_LEN = 400 
     MAX_ANSWER_LEN = 50
     
     # STaR Parameters
-    N_EPOCHS = 6          # More epochs because we build data iteratively
+    N_EPOCHS = 10
     LEARNING_RATE = 1e-5
-    BATCH_SIZE = 8         # Keep small for generation
-    NUM_SAMPLES = 8        # How many attempts per question (Exploration width)
-    TEMPERATURE = 1.0      # High temp to encourage diversity
+    BATCH_SIZE = 8
+    NUM_SAMPLES = 8
+    TEMPERATURE = 1.0    # High temp to encourage diversity
 
 # --- 1. EVALUATION FUNCTION ---
 def evaluate(model, tokenizer, val_loader, device):
