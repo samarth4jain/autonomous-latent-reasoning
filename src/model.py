@@ -34,25 +34,14 @@ class ContinuousThoughtModel(GPT2LMHeadModel):
         current_attention_mask = attention_mask
 
         # --- SAFETY FIX: Force Mask to Match Total Sequence Length ---
-        # When using generate(), Hugging Face doesn't know about our extra 'thought' tokens.
-        # It passes a mask that is too short. We must check the cache and pad the mask.
         if past_key_values is not None and current_attention_mask is not None:
-            # Calculate actual sequence length (Cache + Current Token)
-            # past_key_values[0][0] shape is (batch, heads, seq_len, head_dim)
             cache_len = past_key_values[0][0].shape[-2]
             total_len = cache_len + current_embeds.shape[1]
-            
             mask_len = current_attention_mask.shape[1]
             
             if mask_len < total_len:
                 diff = total_len - mask_len
-                # Create padding of 1s (attend to everything)
-                padding = torch.ones(
-                    (current_attention_mask.shape[0], diff), 
-                    dtype=current_attention_mask.dtype, 
-                    device=current_attention_mask.device
-                )
-                # Append padding to the mask
+                padding = torch.ones((current_attention_mask.shape[0], diff), dtype=current_attention_mask.dtype, device=current_attention_mask.device)
                 current_attention_mask = torch.cat([current_attention_mask, padding], dim=1)
 
         # --- Position ID Correction ---
@@ -66,6 +55,7 @@ class ContinuousThoughtModel(GPT2LMHeadModel):
         if past_key_values is None and current_embeds is not None:
             batch_size = current_embeds.shape[0]
             device = current_embeds.device
+            ones = torch.ones((batch_size, 1), dtype=torch.long, device=device)
             
             for _ in range(self.n_thoughts):
                 outputs = self.transformer(
@@ -79,9 +69,8 @@ class ContinuousThoughtModel(GPT2LMHeadModel):
                 
                 current_embeds = torch.cat([current_embeds, thought_vector], dim=1)
                 
-                # Update mask for the new thought token (if mask exists)
+                # Update mask
                 if current_attention_mask is not None:
-                    ones = torch.ones((batch_size, 1), dtype=current_attention_mask.dtype, device=device)
                     current_attention_mask = torch.cat([current_attention_mask, ones], dim=1)
 
         # 3. Standard Transformer Forward Pass
@@ -103,14 +92,16 @@ class ContinuousThoughtModel(GPT2LMHeadModel):
         hidden_states = transformer_outputs[0]
         lm_logits = self.lm_head(hidden_states)
 
-        # 4. Calculate Loss (Training Mode Only)
+        # 4. Calculate Loss
         loss = None
         if labels is not None:
             loss_fct = nn.CrossEntropyLoss()
             thought_logits = lm_logits[:, -self.n_thoughts:, :]
             num_tokens_to_compare = min(self.n_thoughts, labels.shape[1])
+            
             shift_logits = thought_logits[:, :num_tokens_to_compare, :].contiguous()
             shift_labels = labels[:, :num_tokens_to_compare].contiguous()
+
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
         return CausalLMOutputWithCrossAttentions(

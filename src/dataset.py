@@ -18,7 +18,6 @@ class ProsQADataset(Dataset):
         question = item['question']
         answer = item['answer'] + self.tokenizer.eos_token
         
-        # Tokenize question
         question_tokenized = self.tokenizer(
             question,
             max_length=self.max_q_len,
@@ -27,7 +26,6 @@ class ProsQADataset(Dataset):
             return_tensors="pt"
         )
         
-        # Tokenize answer for labels
         labels_tokenized = self.tokenizer(
             answer,
             max_length=self.max_a_len,
@@ -37,7 +35,7 @@ class ProsQADataset(Dataset):
         )
 
         labels = labels_tokenized.input_ids.squeeze(0)
-        labels[labels == self.tokenizer.pad_token_id] = -100 # Mask padding
+        labels[labels == self.tokenizer.pad_token_id] = -100
 
         return {
             "input_ids": question_tokenized.input_ids.squeeze(0),
