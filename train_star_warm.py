@@ -20,14 +20,21 @@ class Config:
     MAX_QUESTION_LEN = 400
     MAX_ANSWER_LEN = 50
     
-    N_EPOCHS = 5
+    # --- CRITICAL CHANGE: INCREASE EPOCHS ---
+    N_EPOCHS = 6 
+    
     LEARNING_RATE = 5e-6 
     
-    # Keep batch size 1 to avoid padding issues during generation
+    # Keep BATCH_SIZE=1 for the Generation/Exploration phase to avoid padding issues
     BATCH_SIZE = 1
+    # NEW: Use a higher batch size for the training step itself
+    TRAINING_BATCH_SIZE = 32 
+    
     NUM_SAMPLES = 8
     TEMPERATURE = 1.0
     MAX_GRAD_NORM = 1.0
+    # Match Threshold from the last working state
+    MATCH_THRESHOLD = 0.8 
 
 def evaluate(model, tokenizer, val_loader, device):
     print("\n--- Evaluating (Token Accuracy) ---")
@@ -36,6 +43,7 @@ def evaluate(model, tokenizer, val_loader, device):
     total_tokens = 0
     
     with torch.no_grad():
+        # --- FIX: Eval runs over the entire DataLoader (no break) ---
         for batch in tqdm(val_loader, desc="Eval"):
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
@@ -81,15 +89,16 @@ def main():
         tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
         
     tokenizer.pad_token = tokenizer.eos_token
-    # Removed left-padding setting to match baseline behavior
 
     train_dataset = ProsQADataset(cfg.TRAIN_FILE, tokenizer, cfg.MAX_QUESTION_LEN, cfg.MAX_ANSWER_LEN)
     val_dataset = ProsQADataset(cfg.VAL_FILE, tokenizer, cfg.MAX_QUESTION_LEN, cfg.MAX_ANSWER_LEN)
     
+    # Loader for Generation (Batch Size 1)
     gen_loader = DataLoader(train_dataset, batch_size=cfg.BATCH_SIZE, shuffle=True)
+    # Loader for Evaluation (Batch Size 1)
     val_loader = DataLoader(val_dataset, batch_size=cfg.BATCH_SIZE)
 
-    print(f"--- WARM START: Loading Baseline from {cfg.MODEL_PATH} ---")
+    print(f"Loading Warm Start Model from: {cfg.MODEL_PATH}")
     model = ContinuousThoughtModel.from_pretrained(cfg.MODEL_PATH, n_thoughts=cfg.N_THOUGHTS).to(device)
     optimizer = AdamW(model.parameters(), lr=cfg.LEARNING_RATE)
     
@@ -100,14 +109,13 @@ def main():
     for epoch in range(cfg.N_EPOCHS):
         print(f"\n=== Epoch {epoch+1}/{cfg.N_EPOCHS} ===")
         
+        # --- PHASE 1: GENERATION (Exploration runs for 100% of the data) ---
         print(">> Generating & Filtering samples...")
         model.eval()
         successful_examples = []
         
-        batches_to_check = 500
-        
-        for i, batch in enumerate(tqdm(gen_loader, desc="Exploration")):
-            if i >= batches_to_check: break
+        # FIX: Remove break condition to run 100% of the training data
+        for batch in tqdm(gen_loader, desc="Exploration"):
             
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
@@ -138,7 +146,15 @@ def main():
                     full_seq = gen_sequences[sample_idx]
                     pred_answer = full_seq[cfg.N_THOUGHTS : cfg.N_THOUGHTS + len(valid_label)]
                     
-                    if torch.equal(pred_answer, valid_label):
+                    is_success = False
+                    if pred_answer.numel() > 0 and valid_label.numel() > 0:
+                        compare_len = min(len(pred_answer), len(valid_label))
+                        matches = (pred_answer[:compare_len] == valid_label[:compare_len]).sum().item()
+                        accuracy = matches / len(valid_label)
+                        if accuracy >= cfg.MATCH_THRESHOLD:
+                            is_success = True
+                    
+                    if is_success:
                         successful_examples.append({
                             "input_ids": input_ids[j],
                             "labels": labels[j] 
@@ -148,9 +164,10 @@ def main():
         print(f">> Found {len(successful_examples)} successful reasoning paths.")
         
         if len(successful_examples) == 0:
-            print("!! No successful paths found.")
+            print("!! No successful paths found. Try lowering MATCH_THRESHOLD.")
             continue
 
+        # --- PHASE 2: TRAINING (Self-Correction) ---
         print(">> Training on successful paths...")
         model.train()
         random.shuffle(successful_examples)
@@ -158,14 +175,16 @@ def main():
         train_loss = 0
         steps = 0
         
-        train_batch_size = 1 
-        
-        for i in range(0, len(successful_examples), train_batch_size):
-            batch_data = successful_examples[i : i + train_batch_size]
+        # Use the dedicated TRAINING_BATCH_SIZE (e.g., 32)
+        for i in range(0, len(successful_examples), cfg.TRAINING_BATCH_SIZE):
+            batch_data = successful_examples[i : i + cfg.TRAINING_BATCH_SIZE]
             if not batch_data: continue
 
+            # Stack tensors
             b_input_ids = torch.stack([x["input_ids"] for x in batch_data]).to(device)
             b_labels = torch.stack([x["labels"] for x in batch_data]).to(device)
+            
+            # Create attention mask
             b_attention_mask = (b_input_ids != tokenizer.pad_token_id).long()
 
             optimizer.zero_grad()
@@ -184,12 +203,14 @@ def main():
         avg_loss = train_loss / steps if steps > 0 else 0.0
         print(f"Epoch {epoch+1} Training Loss: {avg_loss:.4f}")
 
+        # --- PHASE 3: EVALUATION ---
         acc = evaluate(model, tokenizer, val_loader, device)
+        
         if acc > best_accuracy:
             best_accuracy = acc
             print(f"New best accuracy! Saving model to {cfg.SAVE_PATH}")
             model.save_pretrained(cfg.SAVE_PATH)
-            tokenizer.save_pretrained(cfg.SAVE_PATH)
+            tokenizer.save_pretrained(SAVE_PATH)
 
     print(f"STaR Training complete! Best Acc: {best_accuracy:.2f}%")
 
