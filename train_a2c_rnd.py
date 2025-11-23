@@ -93,8 +93,16 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=cfg.BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=cfg.BATCH_SIZE)
 
-    # 1. Load Agent (A2C)
-    agent = A2CModel.from_pretrained(cfg.MODEL_NAME, n_thoughts=cfg.N_THOUGHTS, max_answer_len=cfg.MAX_ANSWER_LEN).to(device)
+    # 1. Load Agent (A2C) - WARM START
+    # We load the weights from the supervised baseline we trained earlier
+    BASELINE_PATH = 'saved_models/baseline_model'
+    print(f"--- WARM START: Loading weights from {BASELINE_PATH} ---")
+    
+    agent = A2CModel.from_pretrained(
+        BASELINE_PATH, 
+        n_thoughts=cfg.N_THOUGHTS, 
+        max_answer_len=cfg.MAX_ANSWER_LEN
+    ).to(device)
     
     # 2. Load Curiosity Module (RND)
     gpt_config = GPT2Config.from_pretrained(cfg.MODEL_NAME)
