@@ -27,16 +27,28 @@ class ContinuousThoughtModel(GPT2LMHeadModel):
         **kwargs
     ):
         # 1. Handle input embeddings
-        # If input_ids is provided, get embeddings. Otherwise use provided inputs_embeds
         if input_ids is not None and inputs_embeds is None:
             inputs_embeds = self.transformer.wte(input_ids)
         
         current_embeds = inputs_embeds
         current_attention_mask = attention_mask
 
-        # 2. LOGIC: Only generate thoughts if this is the *first* pass (Prompt processing)
-        # If past_key_values is None, we are processing the prompt -> Generate Thoughts
-        # If past_key_values exists, we are generating answer tokens -> Skip Thoughts
+        # --- CRITICAL FIX FOR POSITION IDS ---
+        # The 'generate' loop passes position_ids based on the input text length.
+        # But we are inserting N thoughts, so the real positions are shifted.
+        if position_ids is not None:
+            if past_key_values is None:
+                # Phase 1: Prompt Processing
+                # The provided position_ids are too short (e.g., 400) because they don't include thoughts.
+                # We set to None so GPT2 automatically generates 0..400+N correctly.
+                position_ids = None 
+            else:
+                # Phase 2: Token Generation
+                # The generator thinks we are at pos 400, but we are really at 400+N.
+                # We shift the position_ids to match reality.
+                position_ids = position_ids + self.n_thoughts
+
+        # 2. Generate Thoughts (Only if this is the first pass)
         if past_key_values is None and current_embeds is not None:
             batch_size = current_embeds.shape[0]
             device = current_embeds.device
@@ -46,7 +58,7 @@ class ContinuousThoughtModel(GPT2LMHeadModel):
                 outputs = self.transformer(
                     inputs_embeds=current_embeds,
                     attention_mask=current_attention_mask,
-                    use_cache=True # Ensure we build up state
+                    use_cache=True 
                 )
                 
                 last_hidden_state = outputs.last_hidden_state[:, -1, :]
@@ -54,18 +66,16 @@ class ContinuousThoughtModel(GPT2LMHeadModel):
                 
                 current_embeds = torch.cat([current_embeds, thought_vector], dim=1)
                 
-                # Extend attention mask for the new thought token
                 if current_attention_mask is not None:
                     current_attention_mask = torch.cat([current_attention_mask, ones_mask], dim=1)
 
         # 3. Standard Transformer Forward Pass
-        # This handles both the initial thought generation AND subsequent answer generation
         transformer_outputs = self.transformer(
             inputs_embeds=current_embeds,
             past_key_values=past_key_values,
             attention_mask=current_attention_mask,
             token_type_ids=token_type_ids,
-            position_ids=position_ids,
+            position_ids=position_ids, # Pass the corrected positions
             head_mask=head_mask,
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_attention_mask,
@@ -81,15 +91,17 @@ class ContinuousThoughtModel(GPT2LMHeadModel):
         # 4. Calculate Loss (Training Mode Only)
         loss = None
         if labels is not None:
-            # Shift so that tokens < n predict n
-            shift_logits = lm_logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            
-            # We assume the training loop handles the masking of thoughts vs answer
             loss_fct = nn.CrossEntropyLoss()
+            
+            # Use only the thought logits to predict the answer
+            thought_logits = lm_logits[:, -self.n_thoughts:, :]
+            num_tokens_to_compare = min(self.n_thoughts, labels.shape[1])
+            
+            shift_logits = thought_logits[:, :num_tokens_to_compare, :].contiguous()
+            shift_labels = labels[:, :num_tokens_to_compare].contiguous()
+
             loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
-        # 5. Return Standard Output Object (Fixes the AttributeError)
         return CausalLMOutputWithCrossAttentions(
             loss=loss,
             logits=lm_logits,
