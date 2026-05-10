@@ -1,17 +1,21 @@
-
-# Python virtual environment
+# Virtual Environment
 venv/
+env/
 
-# Generated data (too large for repo)
-# data/
-
-# Saved model weights (do not commit)
+# Model Weights and Checkpoints
 saved_models/
+*.pt
+*.pth
+*.bin
+*.safetensors
 
-# Python cache files
+# Datasets
+data/*.jsonl
+data/*.csv
+saved_models/
+# Python Cache
 __pycache__/
 *.pyc
 
-# OS-specific files
+# O
 .DS_Store
-Thumbs.db

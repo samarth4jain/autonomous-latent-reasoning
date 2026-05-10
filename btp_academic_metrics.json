@@ -1,0 +1,8 @@
+{
+    "experiment_name": "Latent_Reasoning_ProntoQA_to_MMLU",
+    "training_dataset": "Synthetic_ProntoQA_25k",
+    "evaluation_dataset": "MMLU_Validation",
+    "evaluation_samples": 126,
+    "correct_predictions": 4,
+    "final_accuracy_percentage": 3.17
+}
